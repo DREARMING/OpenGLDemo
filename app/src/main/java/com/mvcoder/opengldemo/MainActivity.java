@@ -132,6 +132,8 @@ public class MainActivity extends AppCompatActivity {
 
         private Triangle mTriangle;
 
+        private Square mSquare;
+
         public volatile float mAngle;
 
         public float getAngle() {
@@ -146,9 +148,13 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onSurfaceCreated(GL10 gl, EGLConfig config) {
             log("onSurfaceCreated");
+            //必须在surface建立后才能创建图形，因为图形所需要的GLES环境这时候才可用
             mTriangle = new Triangle();
+            mSquare = new Square();
             String version = GLES10.glGetString(GLES10.GL_VERSION);
             log("glversion : " + version);
+
+            //设置清除每一帧的默认颜色，即背景色
             GLES20.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         }
 
@@ -162,9 +168,12 @@ public class MainActivity extends AppCompatActivity {
 
             System.out.println("width : " + width + " , height : " + height);
 
+            //设置投影矩阵
             Matrix.frustumM(mProjectionMatrix, 0, -ratio, ratio, -1, 1, 3, 7);
         }
 
+        //该方法会频繁调用，每一帧都会被回掉，但是当GlSurfaceView 设置了setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+        // 就只能在 requestRender() 的时候才会回掉
         @Override
         public void onDrawFrame(GL10 gl) {
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
@@ -175,17 +184,21 @@ public class MainActivity extends AppCompatActivity {
             // Create a rotation transformation for the triangle
           //  long time = SystemClock.uptimeMillis() % 4000L;
           //  float angle = 0.090f * ((int) time);
+            //设置旋转矩阵
             Matrix.setRotateM(mRotationMatrix, 0, mAngle, 0, 0, -1.0f);
 
-
+            //设置摄像机矩阵
             Matrix.setLookAtM(mViewMatrix, 0, 0, 0, -3, 0f, 0f, 0f, 0f, 1.0f, 0);
 
+            //矩阵相乘，得到投影矩阵和摄像机矩阵的融合矩阵，该组合可以让顶点着色正确的将坐标转换成屏幕的具体坐标
             Matrix.multiplyMM(mMVPMatrix, 0, mProjectionMatrix, 0, mViewMatrix, 0);
 
+            //再相乘旋转矩阵，让手势控制图形进行旋转
             Matrix.multiplyMM(scratch, 0 , mMVPMatrix, 0,mRotationMatrix, 0);
 
             // Draw shape
-            mTriangle.draw(scratch);
+            //mTriangle.draw(scratch);
+            mSquare.draw(scratch);
 
         }
     }
@@ -194,6 +207,7 @@ public class MainActivity extends AppCompatActivity {
     class Triangle {
 
         private FloatBuffer vertexBuffer;
+        private FloatBuffer texBuffer;
         private final int mProgram;
 
         static final int COORDS_PER_VERTEX = 3;
@@ -213,16 +227,19 @@ public class MainActivity extends AppCompatActivity {
         float color[] = {0.63671875f, 0.76953125f, 0.22265625f, 1.0f};
 
         float texCoords[] = {
+                0.5f, 1.0f, // 上中
                 0.0f, 0.0f, // 左下角
-                1.0f, 0.0f, // 右下角
-                0.5f, 1.0f // 上中
+                1.0f, 0.0f // 右下角
         };
 
         private final String vertexShaderCode =
                 "uniform mat4 uMVPMatrix;" +
+                        "varying vec2 v_texCoord;" +
+                        "layout (location = 1) attribute vec2 aTexCoord;" +
                 "attribute vec4 vPosition;" +
                         "void main() {" +
                         "  gl_Position = uMVPMatrix * vPosition;" +
+                        "  v_texCoord = aTexCoord;" +
                         "}";
 
         private final String fragmentShaderCode =
@@ -247,6 +264,8 @@ public class MainActivity extends AppCompatActivity {
 
         private int mColorHandle;
 
+        private int mTextureId = -1;
+
         public Triangle() {
             // initialize vertex byte buffer for shape coordinates
             ByteBuffer bb = ByteBuffer.allocateDirect(
@@ -262,11 +281,20 @@ public class MainActivity extends AppCompatActivity {
             // set the buffer to read the first coordinate
             vertexBuffer.position(0);
 
+
+            ByteBuffer tb = ByteBuffer.allocateDirect(texCoords.length * 4);
+            tb.order(ByteOrder.nativeOrder());
+            texBuffer = tb.asFloatBuffer();
+            texBuffer.put(texCoords);
+            texBuffer.position(0);
+
             int vertexShader = loadShader(GLES20.GL_VERTEX_SHADER, vertexShaderCode);
 
             int fragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, fragmentShaderCode);
 
             int fragmentTexShader = loadShader(GLES20.GL_FRAGMENT_SHADER, fragmentTextureShaderCode);
+
+            loadTexture();
 
             mProgram = GLES20.glCreateProgram();
 
@@ -278,6 +306,7 @@ public class MainActivity extends AppCompatActivity {
             GLES20.glAttachShader(mProgram, fragmentTexShader);
 
             GLES20.glLinkProgram(mProgram);
+
 
         }
 
@@ -296,22 +325,24 @@ public class MainActivity extends AppCompatActivity {
             GLES20.glGenTextures(1, textureId, 0);
             int[] result = null;
             if (textureId[0] != 0) {
-                Bitmap bitmap = BitmapFactory.decodeResource(getResources(),R.mipmap.ic_launcher);
+                Bitmap bitmap = BitmapFactory.decodeStream(getResources().openRawResource(R.raw.ic_launcher));
                 result = new int[3];
                 result[0] = textureId[0]; // TEXTURE_ID
                 result[1] = bitmap.getWidth(); // TEXTURE_WIDTH
                 result[2] = bitmap.getHeight(); // TEXTURE_HEIGHT
                 // Bind to the texture in OpenGL
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId[0]);
+
+                mTextureId = textureId[0];
                 // Set filtering
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER,
-                        GLES20.GL_LINEAR);
+                        GLES20.GL_NEAREST);
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER,
-                        GLES20.GL_LINEAR);
+                        GLES20.GL_NEAREST);
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S,
-                        GLES20.GL_REPEAT);
+                        GLES20.GL_CLAMP_TO_EDGE);
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T,
-                        GLES20.GL_REPEAT);
+                        GLES20.GL_CLAMP_TO_EDGE);
                 // Load the bitmap into the bound texture.
                 GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0);
                 // Recycle the bitmap, since its data has been loaded into OpenGL.
@@ -337,15 +368,17 @@ public class MainActivity extends AppCompatActivity {
                     GLES20.GL_FLOAT, false,
                     vertexStride, vertexBuffer);
 
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, mTextureId);
 
+            GLES20.glEnableVertexAttribArray(1);
+
+            GLES20.glVertexAttribPointer(1, 2,GLES20.GL_FLOAT,false, 2 * 4, texBuffer);
 
             // get handle to fragment shader's vColor member
             //mColorHandle = GLES20.glGetUniformLocation(mProgram, "vColor");
 
             // Set color for drawing the triangle
             //GLES20.glUniform4fv(mColorHandle, 1, color, 0);
-
-            //GLES20.glGenTextures();
 
 
             //应用projection投影和camera View
@@ -358,23 +391,69 @@ public class MainActivity extends AppCompatActivity {
 
             // Disable vertex array
             GLES20.glDisableVertexAttribArray(mPositionHandle);
+            GLES20.glDisableVertexAttribArray(1);
         }
     }
 
     public class Square {
 
+        private int program;
+
         private FloatBuffer vertexBuffer;
         private ShortBuffer drawListBuffer;
+        private FloatBuffer mTexBuffer;
 
         // number of coordinates per vertex in this array
         static final int COORDS_PER_VERTEX = 3;
+
+        float color[] = {0.63671875f, 0.76953125f, 0.22265625f, 1.0f};
+
         float squareCoords[] = {
                 -0.5f, 0.5f, 0.0f,   // top left
                 -0.5f, -0.5f, 0.0f,   // bottom left
                 0.5f, -0.5f, 0.0f,   // bottom right
-                0.5f, 0.5f, 0.0f}; // top right
+                0.5f, 0.5f, 0.0f    // top right
+        };
 
         private short drawOrder[] = {0, 1, 2, 0, 2, 3}; // order to draw vertices
+
+        float texCoords[] = {
+                0.0f, 1.0f, // 上中
+                0.0f, 0.0f, // 左下角
+                1.0f, 0.0f, // 右下角
+                1.0f, 1.0f
+        };
+
+        /**
+         * GLSL 语法
+         *
+         * 1. varying 关键字一般用于输出顶点着色器的属性到片段着色器
+         * 2. layout(location = 1) 用于标记一个属性所在的位置，可以通过 glGetAttribLocation 通过变量名找到属性，然后glVertexAttribPointer 方法注入属性值
+         * 3. uniform变量的注入 可以通过glGetUniformLocation(program, "uMVPMatrix") 获取 uniform 变量的位置pos，再通过 glUniformMatrix4fv(pos, 1, false, mvpMatrix,0)
+         */
+        private final String vertexShaderCode =
+                "uniform mat4 uMVPMatrix;" +
+                        "varying vec2 v_texCoord;" +
+                        "attribute vec4 vPosition;" +
+                        "layout (location = 1) attribute vec2 aTexCoord;" +
+                        "void main() {" +
+                        "  gl_Position = uMVPMatrix * vPosition;" +
+                        "  v_texCoord = aTexCoord;" +
+                        "}";
+
+        private final String fragmentTexShaderCode =
+                        "varying vec2 v_texCoord;" +
+                        "uniform sampler2D u_samplerTexture;" +
+                        "void main() {" +
+                        "  gl_FragColor = texture2D(u_samplerTexture, v_texCoord);" +
+                        "}";
+
+        private final String fragmentShaderCode =
+                "precision mediump float;" +
+                        "uniform vec4 vColor;" +
+                        "void main() {" +
+                        "  gl_FragColor = vColor;" +
+                        "}";
 
         public Square() {
             // initialize vertex byte buffer for shape coordinates
@@ -394,6 +473,130 @@ public class MainActivity extends AppCompatActivity {
             drawListBuffer = dlb.asShortBuffer();
             drawListBuffer.put(drawOrder);
             drawListBuffer.position(0);
+
+            ByteBuffer tb = ByteBuffer.allocateDirect(texCoords.length * 4);
+            tb.order(ByteOrder.nativeOrder());
+            mTexBuffer = tb.asFloatBuffer();
+            mTexBuffer.put(texCoords);
+            mTexBuffer.position(0);
+
+
+            //创建顶点着色器
+            int vertextShaderId = GLES20.glCreateShader(GLES20.GL_VERTEX_SHADER);
+            //设置顶点着色器的代码字符串
+            GLES20.glShaderSource(vertextShaderId, vertexShaderCode);
+            //编译顶点着色器
+            GLES20.glCompileShader(vertextShaderId);
+
+            //创建片段着色器
+            int fragmentTexShaderId = GLES20.glCreateShader(GLES20.GL_FRAGMENT_SHADER);
+            //设置片段着色器的代码字符串
+            GLES20.glShaderSource(fragmentTexShaderId, fragmentTexShaderCode);
+            //编译片段着色器
+            GLES20.glCompileShader(fragmentTexShaderId);
+
+            int fragmentShaderId = GLES20.glCreateShader(GLES20.GL_FRAGMENT_SHADER);
+            GLES20.glShaderSource(fragmentShaderId, fragmentShaderCode);
+            GLES20.glCompileShader(fragmentShaderId);
+
+            //创建该图形的渲染程序
+            program = GLES20.glCreateProgram();
+
+            bindTexture();
+
+            //让程序绑定顶点着色器
+            GLES20.glAttachShader(program,vertextShaderId);
+            //让程序绑定片段着色器
+            GLES20.glAttachShader(program,fragmentTexShaderId);
+            GLES20.glLinkProgram(program);
+
+
+            //绑定完之后就可以删除掉着色器
+            GLES20.glDeleteShader(vertextShaderId);
+            //GLES20.glDeleteShader(fragmentShaderId);
+            GLES20.glDeleteShader(fragmentTexShaderId);
+        }
+
+        private int textureId = -1;
+
+        private void bindTexture(){
+            Bitmap bitmap = BitmapFactory.decodeStream(getResources().openRawResource(R.raw.ic_launcher));
+            if(bitmap == null) return;
+            int[] texture = new int[1];
+
+            //产生一个纹理对象。
+            GLES20.glGenTextures(texture.length, texture, 0);
+            textureId = texture[0];
+            int width = bitmap.getWidth();
+            int height = bitmap.getHeight();
+
+            //绑定纹理对象，绑定以后，对于GL_TEXTURE_2D的所有操作，都会操作到该纹理对象中
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId);
+
+            //设置过滤器，在空间坐标选择纹理点的时候用线性还是附近的方式，GL_NEAREST是设置选取纹理点到具体坐标的最附近值，GL_linear则选取附近集中颜色的叠加
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST);
+
+            //设置包裹模式，当顶点坐标在纹理坐标之外，会以哪种模式显示
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_REPEAT);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_REPEAT);
+
+            //设置当前纹理对象的纹理为bitmap
+            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0);
+            // Recycle the bitmap, since its data has been loaded into OpenGL.
+            bitmap.recycle();
+        }
+
+
+        public void draw(float[] mvpMatrix){
+            //设置渲染程序
+            GLES20.glUseProgram(program);
+
+            //这里采用索引坐标方法，这里是填充一个索引坐标数组到GL_ELEMENT_ARRAY_BUFFER中，该数组代表顶点数组中哪几个顶点组成一个图形。
+            int[] drawBuffer = new int[1];
+            GLES20.glGenBuffers(1, drawBuffer, 0);
+            int bufferId = drawBuffer[0];
+            GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, bufferId);
+            //第二个参数是整个索引坐标数组的占用字节数，第三个参数是索引坐标数组的direct native order buffer
+            GLES20.glBufferData(GLES20.GL_ELEMENT_ARRAY_BUFFER, 12, drawListBuffer,GLES20.GL_STATIC_DRAW);
+
+            //填充顶点数组
+            //第一个参数是填充 vertex shader具体属性的location，第二个参数指需要多个元素代表一个属性，这里是三维坐标，所以是3
+            //第五个参数是跨度，下一个属性需要跳跃多少字节。这里显而易见是 3 * sizeof(float); 第六个就是三位坐标的buffer。
+            GLES20.glVertexAttribPointer(0, 3, GLES20.GL_FLOAT,false, 3 * 4, vertexBuffer);
+            //开启location = 0的属性设置，默认为false
+            GLES20.glEnableVertexAttribArray(0);
+
+
+            //绑纹理题对象
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId);
+
+            //设置纹理坐标属性，设置跟顶点属性一致
+            GLES20.glVertexAttribPointer(1, 2,GLES20.GL_FLOAT,false, 2 * 4, mTexBuffer);
+            GLES20.glEnableVertexAttribArray(1);
+
+
+            //获取uniform 属性，并且填充它
+            int mvpMatrixHandle = GLES20.glGetUniformLocation(program, "uMVPMatrix");
+            GLES20.glUniformMatrix4fv(mvpMatrixHandle, 1, false, mvpMatrix,0);
+
+
+            /*
+            //设置颜色
+            int mColorHandle = GLES20.glGetUniformLocation(program, "vColor");
+            //Set color for drawing the triangle
+            GLES20.glUniform4fv(mColorHandle, 1, color, 0);*/
+
+            //绘制三角形，并且以索引坐标数组指定的属性为准。第二个参数是画多少个点，第三个参数是索引坐标的类型
+            GLES20.glDrawElements(GLES20.GL_TRIANGLES, 6, GLES20.GL_UNSIGNED_SHORT, 0);
+
+            //同样是绘制三角形，但是是通过顶点坐标数组实现
+            //GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 3);
+
+            //用完可以清理掉
+            GLES20.glDisableVertexAttribArray(0);
+            GLES20.glDisableVertexAttribArray(1);
+
         }
     }
 
